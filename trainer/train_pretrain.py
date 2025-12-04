@@ -32,7 +32,7 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    data_path: str = "data/pretrain.jsonl"
+    data_path: str = "dataset/pretrain_hq.jsonl"
     tokenizer_path: str = "model"
     save_dir: str = "checkpoints"
 
