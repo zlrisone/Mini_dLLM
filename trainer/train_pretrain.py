@@ -45,6 +45,8 @@ class TrainConfig:
 
     num_workers: int = 4
     save_every: int = 1
+    sample_every: int = 1000  # 每多少步采样一次
+    save_steps: int = 1000  # 每多少步保存checkpoint
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
     # wandb配置
@@ -186,7 +188,24 @@ def validate_sampling(model, tokenizer, model_config, train_config, num_samples=
     print("=" * 50 + "\n")
 
 
-def train_epoch(model, dataloader, optimizer, scheduler, model_config, train_config, epoch, global_step):
+def save_checkpoint(model, optimizer, scheduler, epoch, global_step, loss, best_loss, model_config, train_config, filename):
+    """保存checkpoint"""
+    checkpoint_path = os.path.join(train_config.save_dir, filename)
+    torch.save({
+        'epoch': epoch,
+        'global_step': global_step,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'loss': loss,
+        'best_loss': best_loss,
+        'model_config': model_config,
+        'train_config': train_config
+    }, checkpoint_path)
+    print(f"Saved checkpoint to {checkpoint_path}")
+
+
+def train_epoch(model, dataloader, optimizer, scheduler, model_config, train_config, epoch, global_step, best_loss, tokenizer):
     model.train()
     total_loss = 0
     num_batches = 0
@@ -219,6 +238,20 @@ def train_epoch(model, dataloader, optimizer, scheduler, model_config, train_con
                     'train/lr': scheduler.get_last_lr()[0],
                     'train/global_step': global_step
                 }, step=global_step)
+
+            # 每sample_every步采样一次
+            if global_step % train_config.sample_every == 0:
+                validate_sampling(model, tokenizer, model_config, train_config, num_samples=2)
+                model.train()
+
+            # 每save_steps步保存checkpoint
+            if global_step % train_config.save_steps == 0:
+                save_checkpoint(
+                    model, optimizer, scheduler, epoch, global_step,
+                    loss.item() * train_config.grad_accum_steps, best_loss,
+                    model_config, train_config,
+                    f"checkpoint_step_{global_step}.pt"
+                )
 
         total_loss += loss.item() * train_config.grad_accum_steps
         num_batches += 1
@@ -255,9 +288,7 @@ def main():
     dataset = PretrainDataset(
         data_path=train_config.data_path,
         tokenizer=tokenizer,
-        max_length=model_config.max_position_embeddings,
-        mask_token_id=model_config.mask_token_id,
-        eps=model_config.eps
+        max_length=model_config.max_position_embeddings
     )
 
     dataloader = DataLoader(
@@ -338,7 +369,9 @@ def main():
             model_config=model_config,
             train_config=train_config,
             epoch=epoch,
-            global_step=global_step
+            global_step=global_step,
+            best_loss=best_loss,
+            tokenizer=tokenizer
         )
 
         print(f"Epoch {epoch + 1} - Average Loss: {avg_loss:.4f}")
@@ -350,23 +383,16 @@ def main():
                 'epoch/epoch': epoch + 1
             }, step=global_step)
 
-        # 验证采样
+        # epoch结束时验证采样
         validate_sampling(model, tokenizer, model_config, train_config, num_samples=2)
 
+        # 每save_every个epoch保存checkpoint
         if (epoch + 1) % train_config.save_every == 0:
-            checkpoint_path = os.path.join(train_config.save_dir, f"checkpoint_epoch_{epoch + 1}.pt")
-            torch.save({
-                'epoch': epoch,
-                'global_step': global_step,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'loss': avg_loss,
-                'best_loss': best_loss,
-                'model_config': model_config,
-                'train_config': train_config
-            }, checkpoint_path)
-            print(f"Saved checkpoint to {checkpoint_path}")
+            save_checkpoint(
+                model, optimizer, scheduler, epoch, global_step,
+                avg_loss, best_loss, model_config, train_config,
+                f"checkpoint_epoch_{epoch + 1}.pt"
+            )
 
         if avg_loss < best_loss:
             best_loss = avg_loss
