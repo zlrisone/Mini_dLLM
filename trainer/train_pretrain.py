@@ -59,24 +59,23 @@ class TrainConfig:
 
 
 def forward_process(input_ids, mask_token_id=3, eps=1e-3):
-    """
-    序列加噪的前向过程
-    Args:
-        input_ids: shape (b, l) 的输入序列
-        mask_token_id: MASK token的id
-        eps: 最小mask概率
-    Returns:
-        noisy_batch: 加噪后的序列
-        masked_indices: 被mask的位置
-        p_mask: mask概率
-    """
     b, l = input_ids.shape
-    t = torch.rand(b, device=input_ids.device)
-    p_mask = (1 - eps) * t + eps
-    p_mask = p_mask[:, None].repeat(1, l)
 
+    # 每个 batch 样本采样一个 mask 比例 t
+    t = torch.rand(b, device=input_ids.device)
+
+    # 防止 mask 概率为 0
+    p_mask = t * (1 - eps) + eps      # shape: (b,)
+    p_mask = p_mask[:, None].expand(-1, l)  # shape: (b, l)
+
+    # 采样需要 mask 的位置
     masked_indices = torch.rand((b, l), device=input_ids.device) < p_mask
-    noisy_batch = torch.where(masked_indices, mask_token_id, input_ids)
+
+    # 构造 mask token
+    mask_token = torch.full_like(input_ids, mask_token_id)
+
+    noisy_batch = torch.where(masked_indices, mask_token, input_ids)
+
     return noisy_batch, masked_indices, p_mask
 
 
@@ -90,24 +89,24 @@ def compute_loss(model, input_ids, mask_token_id=3, eps=1e-3):
     )
 
     logits = model(noisy_batch)
-
-    loss = F.cross_entropy(
+    assert logits.shape[:2] == input_ids.shape, \
+        f"Logits shape {logits.shape} does not match input {input_ids.shape}"
+    
+    loss_all = F.cross_entropy(
         logits.view(-1, logits.size(-1)),
         input_ids.view(-1),
         reduction='none'
     )
-    loss = loss.view(input_ids.shape)
+    loss_all = loss_all.view(input_ids.shape)  # (b, l)
 
-    masked_loss = loss * masked_indices.float()
-
+    # 只在 masked positions 求平均
+    masked_loss = loss_all * masked_indices.float()
     num_masked = masked_indices.sum()
-    if num_masked > 0:
-        loss = masked_loss.sum() / num_masked
-    else:
-        loss = masked_loss.sum()
 
-    return loss
+    if num_masked == 0:
+        return masked_loss.sum()
 
+    return masked_loss.sum() / num_masked
 
 @torch.no_grad()
 def sample_from_mask(model, seq_len, batch_size=1, mask_token_id=3, num_steps=50, device='cuda'):
