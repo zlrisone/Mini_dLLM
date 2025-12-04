@@ -14,12 +14,10 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 class PretrainDataset(Dataset):
-    def __init__(self, data_path, tokenizer, max_length=512, mask_token_id=3, eps=1e-3):
+    def __init__(self, data_path, tokenizer, max_length=512):
         super().__init__()
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.mask_token_id = mask_token_id
-        self.eps = eps
         self.samples = self.load_data(data_path)
 
     def load_data(self, path):
